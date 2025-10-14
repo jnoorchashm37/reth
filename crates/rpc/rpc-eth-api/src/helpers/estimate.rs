@@ -2,7 +2,7 @@
 
 use super::{Call, LoadPendingBlock};
 use crate::{AsEthApiError, FromEthApiError, IntoEthApiError};
-use alloy_evm::{call::caller_gas_allowance, overrides::apply_state_overrides};
+use alloy_evm::overrides::apply_state_overrides;
 use alloy_network::TransactionBuilder;
 use alloy_primitives::{TxKind, U256};
 use alloy_rpc_types_eth::{state::StateOverride, BlockId};
@@ -88,22 +88,22 @@ pub trait EstimateCall: Call {
         let mut tx_env = self.create_txn_env(&evm_env, request, &mut db)?;
 
         // Check if this is a basic transfer (no input data to account with no code)
-        let mut is_basic_transfer = false;
-        if tx_env.input().is_empty() {
-            if let TxKind::Call(to) = tx_env.kind() {
-                if let Ok(code) = db.db.account_code(&to) {
-                    is_basic_transfer = code.map(|code| code.is_empty()).unwrap_or(true);
-                }
-            }
-        }
+        let is_basic_transfer = if tx_env.input().is_empty() &&
+            let TxKind::Call(to) = tx_env.kind() &&
+            let Ok(code) = db.db.account_code(&to)
+        {
+            code.map(|code| code.is_empty()).unwrap_or(true)
+        } else {
+            false
+        };
 
         // Check funds of the sender (only useful to check if transaction gas price is more than 0).
         //
         // The caller allowance is check by doing `(account.balance - tx.value) / tx.gas_price`
         if tx_env.gas_price() > 0 {
             // cap the highest gas limit by max gas caller can afford with given gas price
-            highest_gas_limit = highest_gas_limit
-                .min(caller_gas_allowance(&mut db, &tx_env).map_err(Self::Error::from_eth_err)?);
+            highest_gas_limit =
+                highest_gas_limit.min(self.caller_gas_allowance(&mut db, &evm_env, &tx_env)?);
         }
 
         // If the provided gas limit is less than computed cap, use that
@@ -123,10 +123,10 @@ pub trait EstimateCall: Call {
             min_tx_env.set_gas_limit(MIN_TRANSACTION_GAS);
 
             // Reuse the same EVM instance
-            if let Ok(res) = evm.transact(min_tx_env).map_err(Self::Error::from_evm_err) {
-                if res.result.is_success() {
-                    return Ok(U256::from(MIN_TRANSACTION_GAS))
-                }
+            if let Ok(res) = evm.transact(min_tx_env).map_err(Self::Error::from_evm_err) &&
+                res.result.is_success()
+            {
+                return Ok(U256::from(MIN_TRANSACTION_GAS))
             }
         }
 

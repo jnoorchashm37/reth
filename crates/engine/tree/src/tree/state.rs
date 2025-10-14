@@ -7,7 +7,7 @@ use alloy_primitives::{
     BlockNumber, B256,
 };
 use reth_chain_state::{EthPrimitives, ExecutedBlockWithTrieUpdates};
-use reth_primitives_traits::{AlloyBlockHeader, NodePrimitives, SealedBlock};
+use reth_primitives_traits::{AlloyBlockHeader, NodePrimitives, SealedHeader};
 use reth_trie::updates::TrieUpdates;
 use std::{
     collections::{btree_map, hash_map, BTreeMap, VecDeque},
@@ -20,7 +20,7 @@ use tracing::debug;
 const DEFAULT_PERSISTED_TRIE_UPDATES_RETENTION: u64 = EPOCH_SLOTS * 2;
 
 /// Number of blocks to retain persisted trie updates for OP Stack chains
-/// OP Stack chains only need `EPOCH_BLOCKS` as reorgs are relevant only when
+/// OP Stack chains only need `EPOCH_SLOTS` as reorgs are relevant only when
 /// op-node reorgs to the same chain twice
 const OPSTACK_PERSISTED_TRIE_UPDATES_RETENTION: u64 = EPOCH_SLOTS;
 
@@ -85,9 +85,12 @@ impl<N: NodePrimitives> TreeState<N> {
         self.blocks_by_hash.get(&hash)
     }
 
-    /// Returns the block by hash.
-    pub(crate) fn block_by_hash(&self, hash: B256) -> Option<Arc<SealedBlock<N::Block>>> {
-        self.blocks_by_hash.get(&hash).map(|b| Arc::new(b.recovered_block().sealed_block().clone()))
+    /// Returns the sealed block header by hash.
+    pub(crate) fn sealed_header_by_hash(
+        &self,
+        hash: &B256,
+    ) -> Option<SealedHeader<N::BlockHeader>> {
+        self.blocks_by_hash.get(hash).map(|b| b.sealed_block().sealed_header().clone())
     }
 
     /// Returns all available blocks for the given hash that lead back to the canonical chain, from
@@ -345,11 +348,11 @@ impl<N: NodePrimitives> TreeState<N> {
         }
     }
 
-    /// Determines if the second block is a direct descendant of the first block.
+    /// Determines if the second block is a descendant of the first block.
     ///
     /// If the two blocks are the same, this returns `false`.
     pub(crate) fn is_descendant(&self, first: BlockNumHash, second: BlockWithParent) -> bool {
-        // If the second block's parent is the first block's hash, then it is a direct descendant
+        // If the second block's parent is the first block's hash, then it is a direct child
         // and we can return early.
         if second.parent == first.hash {
             return true

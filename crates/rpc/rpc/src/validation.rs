@@ -17,6 +17,7 @@ use jsonrpsee::core::RpcResult;
 use jsonrpsee_types::error::ErrorObject;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
 use reth_consensus::{Consensus, FullConsensus};
+use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_engine_primitives::PayloadValidator;
 use reth_errors::{BlockExecutionError, ConsensusError, ProviderError};
 use reth_evm::{execute::Executor, ConfigureEvm};
@@ -142,10 +143,10 @@ where
                 if self.disallow.contains(sender) {
                     return Err(ValidationApiError::Blacklist(*sender))
                 }
-                if let Some(to) = tx.to() {
-                    if self.disallow.contains(&to) {
-                        return Err(ValidationApiError::Blacklist(to))
-                    }
+                if let Some(to) = tx.to() &&
+                    self.disallow.contains(&to)
+                {
+                    return Err(ValidationApiError::Blacklist(to))
                 }
             }
         }
@@ -333,10 +334,10 @@ where
             return Err(ValidationApiError::ProposerPayment)
         }
 
-        if let Some(block_base_fee) = block.header().base_fee_per_gas() {
-            if tx.effective_tip_per_gas(block_base_fee).unwrap_or_default() != 0 {
-                return Err(ValidationApiError::ProposerPayment)
-            }
+        if let Some(block_base_fee) = block.header().base_fee_per_gas() &&
+            tx.effective_tip_per_gas(block_base_fee).unwrap_or_default() != 0
+        {
+            return Err(ValidationApiError::ProposerPayment)
         }
 
         Ok(())
@@ -453,6 +454,17 @@ where
                 },
             ),
         })?;
+
+        // Check block size as per EIP-7934 (only applies when Osaka hardfork is active)
+        let chain_spec = self.provider.chain_spec();
+        if chain_spec.is_osaka_active_at_timestamp(block.timestamp()) &&
+            block.rlp_length() > MAX_RLP_BLOCK_SIZE
+        {
+            return Err(ValidationApiError::Consensus(ConsensusError::BlockTooLarge {
+                rlp_length: block.rlp_length(),
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }));
+        }
 
         self.validate_message_against_block(
             block,

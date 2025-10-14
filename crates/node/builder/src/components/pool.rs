@@ -128,7 +128,7 @@ impl<'a, Node: FullNodeTypes, V> TxPoolBuilder<'a, Node, V> {
 
 impl<'a, Node: FullNodeTypes, V> TxPoolBuilder<'a, Node, TransactionValidationTaskExecutor<V>>
 where
-    V: TransactionValidator + Clone + 'static,
+    V: TransactionValidator + 'static,
     V::Transaction:
         PoolTransaction<Consensus = TxTy<Node::Types>> + reth_transaction_pool::EthPoolTransaction,
 {
@@ -256,7 +256,7 @@ where
 }
 
 /// Spawn all maintenance tasks for a transaction pool (backup + main maintenance).
-fn spawn_maintenance_tasks<Node, Pool>(
+pub fn spawn_maintenance_tasks<Node, Pool>(
     ctx: &BuilderContext<Node>,
     pool: Pool,
     pool_config: &PoolConfig,
