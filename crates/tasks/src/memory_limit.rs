@@ -57,7 +57,7 @@ where
             unsafe { libc::_exit(251) };
         }
         f(); // do the actual work
-        unsafe { libc::_exit(0) };
+             // unsafe { libc::_exit(0) };
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f()))
             .map(|_| {
                 // success path
@@ -167,7 +167,7 @@ mod tests {
         };
 
         let res = run_case(limit, fut).await.expect("timed out");
-        assert!(res.as_ref().unwrap().clone().is_err());
+        assert!(res.is_err());
 
         let msg = res.err().unwrap().to_string();
         // Rust panics in the main task typically produce exit code 101.
