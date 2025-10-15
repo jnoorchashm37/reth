@@ -82,11 +82,6 @@ mod tests {
         time::{timeout, Duration},
     };
 
-    use tokio::{
-        sync::oneshot,
-        time::{timeout, Duration},
-    };
-
     // Helper: run the API and collect the oneshot result with a timeout.
     async fn run_case<F>(
         limit: u64,
