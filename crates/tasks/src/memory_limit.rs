@@ -75,7 +75,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{TaskManager, TaskSpawner};
     use std::future::Future;
+    use tokio::{
+        sync::oneshot,
+        time::{timeout, Duration},
+    };
+
     use tokio::{
         sync::oneshot,
         time::{timeout, Duration},
@@ -201,17 +207,6 @@ mod tests {
         assert!(r1.is_ok(), "first should succeed: {r1:?}");
         assert!(r2.is_err(), "second should fail: {r2:?}");
     }
-}
-
-// #[cfg(all(test, target_os = "linux"))]
-#[cfg(test)]
-mod memory_limit_exec_tests {
-    use crate::{TaskManager, TaskSpawner};
-
-    use tokio::{
-        sync::oneshot,
-        time::{timeout, Duration},
-    };
 
     #[tokio::test(flavor = "multi_thread")]
     async fn executor_spawn_blocking_with_memory_limit_ok_and_oom() {
