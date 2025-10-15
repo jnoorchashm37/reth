@@ -56,8 +56,8 @@ where
         if unsafe { libc::setrlimit(RLIMIT_AS, &lim) } != 0 {
             unsafe { libc::_exit(251) };
         }
-        f(); // do the actual work
-             // unsafe { libc::_exit(0) };
+        // f(); // do the actual work
+        // unsafe { libc::_exit(0) };
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f()))
             .map(|_| {
                 // success path
