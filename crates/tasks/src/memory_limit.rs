@@ -14,7 +14,7 @@ pub fn spawn_blocking_with_memory_limit<F: Future<Output = ()> + Send + 'static>
     // Do NOT enter a Tokio runtime here. We are on a blocking thread
     let status = run_with_memory_limit(memory_limit_bytes, || {
         // this is run in the child - build a new single-thread runtime and drive the future
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_io().build().unwrap();
         rt.block_on(fut);
     });
 
