@@ -21,7 +21,7 @@ pub fn spawn_with_memory_limit_blocking<F: Future<Output = ()>>(
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             rt.block_on(fut);
         })
-        .join()
+        .join();
     });
 
     let res = status.and_then(|st| {
