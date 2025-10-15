@@ -167,7 +167,7 @@ mod tests {
         };
 
         let res = run_case(limit, fut).await.expect("timed out");
-        assert!(res.is_err());
+        assert!(res.as_ref().unwrap().is_err());
 
         let msg = res.err().unwrap().to_string();
         // Rust panics in the main task typically produce exit code 101.
