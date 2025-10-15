@@ -17,8 +17,11 @@ pub fn spawn_with_memory_limit_blocking<F: Future<Output = ()>>(
         // Best: refactor so the heavy work is a blocking FnOnce().
         // As a last resort (with caveats), build a fresh runtime here (Option B).
         // Example (unsafe-ish):
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        rt.block_on(fut);
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(fut);
+        })
+        .join()
     });
 
     let res = status.and_then(|st| {
