@@ -13,7 +13,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 use crate::{
-    memory_limit::spawn_with_memory_limit_blocking,
+    memory_limit::spawn_with_memory_limit,
     metrics::{IncCounterOnDrop, TaskExecutorMetrics},
     shutdown::{signal, GracefulShutdown, GracefulShutdownGuard, Shutdown, Signal},
 };
@@ -154,7 +154,7 @@ impl TaskSpawner for TokioTaskExecutor {
         fut: BoxFuture<'static, ()>,
     ) -> JoinHandle<()> {
         tokio::task::spawn_blocking(move || {
-            spawn_with_memory_limit_blocking(memory_limit_bytes, memory_failure_tx, fut)
+            spawn_with_memory_limit(memory_limit_bytes, memory_failure_tx, fut)
         })
     }
 
@@ -678,7 +678,7 @@ impl TaskSpawner for TaskExecutor {
     ) -> JoinHandle<()> {
         self.metrics.inc_regular_tasks();
         tokio::task::spawn_blocking(move || {
-            spawn_with_memory_limit_blocking(memory_limit_bytes, memory_failure_tx, fut)
+            spawn_with_memory_limit(memory_limit_bytes, memory_failure_tx, fut)
         })
     }
 

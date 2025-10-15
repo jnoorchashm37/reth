@@ -6,15 +6,14 @@ use tokio::sync::oneshot;
 
 /// Run `fut` in a forked child with a memory limit, report the result via `memory_failure_tx`.
 /// Must be called from a blocking context (e.g. `tokio::task::spawn_blocking`).
-pub fn spawn_with_memory_limit_blocking<F: Future<Output = ()> + Send + 'static>(
+pub fn spawn_with_memory_limit<F: Future<Output = ()> + Send + 'static>(
     memory_limit_bytes: u64,
     memory_failure_tx: oneshot::Sender<Result<(), std::io::Error>>,
     fut: F,
 ) {
-    // Do NOT enter a Tokio runtime here. We are on a blocking thread; forking from
-    // here is safe as long as we don't call Handle::current().block_on(..) first.
-    let status = run_with_memory_limit_blocking(memory_limit_bytes, || {
-        // In the child, build a fresh single-thread runtime and drive the future.
+    // Do NOT enter a Tokio runtime here. We are on a blocking thread
+    let status = run_with_memory_limit(memory_limit_bytes, || {
+        // this is run in the child - build a fresh single-thread runtime and drive the future
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(fut);
     });
@@ -43,10 +42,10 @@ pub fn spawn_with_memory_limit_blocking<F: Future<Output = ()> + Send + 'static>
     let _ = memory_failure_tx.send(res);
 }
 
-/// Public API unchanged: returns Err(...) if the memory-limited child didn’t finish cleanly.
-fn run_with_memory_limit_blocking<F>(memory_limit_bytes: u64, f: F) -> io::Result<i32>
+#[allow(unreachable_code)]
+fn run_with_memory_limit<F>(memory_limit_bytes: u64, f: F) -> io::Result<i32>
 where
-    F: FnOnce(), // must not depend on Tokio/runtime state
+    F: FnOnce(),
 {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -59,6 +58,16 @@ where
         }
         f(); // do the actual work
         unsafe { libc::_exit(0) };
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f()))
+            .map(|_| {
+                // success path
+                unsafe { libc::_exit(0) };
+            })
+            .map_err(|_| {
+                // panic path — pick a conventional non-zero code (101 = rustc's panic code)
+                unsafe { libc::_exit(101) };
+            });
+        // unreachable!();
     }
     let mut status = 0;
     if unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
@@ -67,7 +76,7 @@ where
     Ok(status)
 }
 
-// Put this in the same module as `spawn_with_memory_limit_blocking`.
+// Put this in the same module as `spawn_with_memory_limit`.
 
 // #[cfg(all(test, target_os = "linux"))]
 #[cfg(test)]
@@ -90,7 +99,7 @@ mod tests {
     {
         let (tx, rx) = oneshot::channel();
         tokio::task::spawn_blocking(move || {
-            spawn_with_memory_limit_blocking(limit, tx, fut);
+            spawn_with_memory_limit(limit, tx, fut);
         });
 
         // Give the child up to 15s to finish (slow CI boxes, debug mode).
@@ -180,10 +189,10 @@ mod tests {
 
         // Kick off both in parallel on blocking threads.
         let h1 = tokio::task::spawn_blocking(move || {
-            spawn_with_memory_limit_blocking(limit, tx1, fut_ok);
+            spawn_with_memory_limit(limit, tx1, fut_ok);
         });
         let h2 = tokio::task::spawn_blocking(move || {
-            spawn_with_memory_limit_blocking(limit, tx2, fut_oom);
+            spawn_with_memory_limit(limit, tx2, fut_oom);
         });
 
         let r1 = timeout(Duration::from_secs(15), rx1)
@@ -204,9 +213,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn executor_spawn_blocking_with_memory_limit_ok_and_oom() {
-        // Stand up a runtime + manager + executor.
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let handle = rt.handle().clone();
+        // Use the current test runtime; do NOT create a nested runtime here.
+        let handle = tokio::runtime::Handle::current().clone();
         let manager = TaskManager::new(handle.clone());
         let executor = manager.executor();
 
