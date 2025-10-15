@@ -5,47 +5,48 @@ use std::{future::Future, io};
 use tokio::sync::oneshot;
 
 /// spawns block memory limit
-pub fn spawn_with_memory_limit_blocking<F: Future<Output = ()>>(
+pub fn spawn_with_memory_limit_blocking<F: Future<Output = ()> + Send + 'static>(
     memory_limit_bytes: u64,
     memory_failure_tx: oneshot::Sender<Result<(), std::io::Error>>,
     fut: F,
 ) {
-    // Wrap the Future in a blocking closure that *doesn't* touch Tokio inside the child.
-    let status = run_with_memory_limit_blocking(memory_limit_bytes, || {
-        // Do plain, blocking work here. If you must drive `fut`, do it with a
-        // minimal, non-Tokio executor or make the work blocking.
-        // Best: refactor so the heavy work is a blocking FnOnce().
-        // As a last resort (with caveats), build a fresh runtime here (Option B).
-        // Example (unsafe-ish):
-        std::thread::spawn(move || {
+    let _ = std::thread::spawn(move || {
+        // Wrap the Future in a blocking closure that *doesn't* touch Tokio inside the child.
+        let status = run_with_memory_limit_blocking(memory_limit_bytes, || {
+            // Do plain, blocking work here. If you must drive `fut`, do it with a
+            // minimal, non-Tokio executor or make the work blocking.
+            // Best: refactor so the heavy work is a blocking FnOnce().
+            // As a last resort (with caveats), build a fresh runtime here (Option B).
+            // Example (unsafe-ish):
+
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             rt.block_on(fut);
-        })
-        .join();
-    });
+        });
 
-    let res = status.and_then(|st| {
-        if libc::WIFEXITED(st) {
-            let code = { libc::WEXITSTATUS(st) };
-            if code == 0 {
-                Ok(())
-            } else {
+        let res = status.and_then(|st| {
+            if libc::WIFEXITED(st) {
+                let code = { libc::WEXITSTATUS(st) };
+                if code == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("child exited with code {code}"),
+                    ))
+                }
+            } else if libc::WIFSIGNALED(st) {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::Other,
-                    format!("child exited with code {code}"),
+                    format!("child signaled: {}", libc::WTERMSIG(st)),
                 ))
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::Other, format!("bad exit: {st}")))
             }
-        } else if libc::WIFSIGNALED(st) {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("child signaled: {}", libc::WTERMSIG(st)),
-            ))
-        } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, format!("bad exit: {st}")))
-        }
-    });
+        });
 
-    let _ = memory_failure_tx.send(res);
+        let _ = memory_failure_tx.send(res);
+    })
+    .join();
 }
 
 /// Public API unchanged: returns Err(...) if the memory-limited child didn’t finish cleanly.
