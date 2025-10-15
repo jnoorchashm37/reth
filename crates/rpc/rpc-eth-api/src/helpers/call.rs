@@ -571,6 +571,24 @@ pub trait Call:
         })
     }
 
+    /// Executes the closure with the state that corresponds to the given [`BlockId`] on a new task
+    /// with a specified memory limit
+    fn spawn_with_state_at_block_with_memory_limit<F, R>(
+        &self,
+        memory_limit_bytes: u64,
+        at: BlockId,
+        f: F,
+    ) -> impl Future<Output = Result<R, Self::Error>> + Send
+    where
+        F: FnOnce(StateProviderTraitObjWrapper<'_>) -> Result<R, Self::Error> + Send + 'static,
+        R: Send + 'static,
+    {
+        self.spawn_blocking_io_fut_with_memory_limit(memory_limit_bytes, move |this| async move {
+            let state = this.state_at_block_id(at).await?;
+            f(StateProviderTraitObjWrapper(&state))
+        })
+    }
+
     /// Prepares the state and env for the given [`RpcTxReq`] at the given [`BlockId`] and
     /// executes the closure on a new task returning the result of the closure.
     ///
@@ -608,6 +626,58 @@ pub trait Call:
             let (evm_env, at) = self.evm_env_at(at).await?;
             let this = self.clone();
             self.spawn_blocking_io_fut(move |_| async move {
+                let state = this.state_at_block_id(at).await?;
+                let mut db =
+                    CacheDB::new(StateProviderDatabase::new(StateProviderTraitObjWrapper(&state)));
+
+                let (evm_env, tx_env) =
+                    this.prepare_call_env(evm_env, request, &mut db, overrides)?;
+
+                f(StateCacheDbRefMutWrapper(&mut db), evm_env, tx_env)
+            })
+            .await
+        }
+    }
+
+    /// Prepares the state and env for the given [`RpcTxReq`] at the given [`BlockId`] and
+    /// executes the closure on a new task, with a specified memory limit, returning the result of
+    /// the closure.
+    ///
+    /// This returns the configured [`EvmEnv`] for the given [`RpcTxReq`] at
+    /// the given [`BlockId`] and with configured call settings: `prepare_call_env`.
+    ///
+    /// This is primarily used by `eth_call`.
+    ///
+    /// # Blocking behaviour
+    ///
+    /// This assumes executing the call is relatively more expensive on IO than CPU because it
+    /// transacts a single transaction on an empty in memory database. Because `eth_call`s are
+    /// usually allowed to consume a lot of gas, this also allows a lot of memory operations so
+    /// we assume this is not primarily CPU bound and instead spawn the call on a regular tokio task
+    /// instead, where blocking IO is less problematic.
+    fn spawn_with_call_at_with_memory_limit<F, R>(
+        &self,
+        memory_limit_bytes: u64,
+        request: RpcTxReq<<Self::RpcConvert as RpcConvert>::Network>,
+        at: BlockId,
+        overrides: EvmOverrides,
+        f: F,
+    ) -> impl Future<Output = Result<R, Self::Error>> + Send
+    where
+        Self: LoadPendingBlock,
+        F: FnOnce(
+                StateCacheDbRefMutWrapper<'_, '_>,
+                EvmEnvFor<Self::Evm>,
+                TxEnvFor<Self::Evm>,
+            ) -> Result<R, Self::Error>
+            + Send
+            + 'static,
+        R: Send + 'static,
+    {
+        async move {
+            let (evm_env, at) = self.evm_env_at(at).await?;
+            let this = self.clone();
+            self.spawn_blocking_io_fut_with_memory_limit(memory_limit_bytes, move |_| async move {
                 let state = this.state_at_block_id(at).await?;
                 let mut db =
                     CacheDB::new(StateProviderDatabase::new(StateProviderTraitObjWrapper(&state)));

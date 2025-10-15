@@ -83,6 +83,38 @@ pub trait SpawnBlocking: EthApiTypes + Clone + Send + Sync + 'static {
         async move { rx.await.map_err(|_| EthApiError::InternalEthError)? }
     }
 
+    /// Executes the future on a new blocking task with a specified memory limit
+    ///
+    /// Note: This is expected for futures that are dominated by blocking IO operations, for tracing
+    /// or CPU bound operations in general use [`spawn_tracing`](Self::spawn_tracing).
+    fn spawn_blocking_io_fut_with_memory_limit<F, R, Fut>(
+        &self,
+        memory_limit_bytes: u64,
+        f: F,
+    ) -> impl Future<Output = Result<R, Self::Error>> + Send
+    where
+        Fut: Future<Output = Result<R, Self::Error>> + Send + 'static,
+        F: FnOnce(Self) -> Fut + Send + 'static,
+        R: Send + 'static,
+    {
+        let (tx, rx) = oneshot::channel();
+        let (mem_tx, mem_rx) = oneshot::channel();
+        let this = self.clone();
+        self.io_task_spawner().spawn_blocking_with_memory_limit(
+            memory_limit_bytes,
+            mem_tx,
+            Box::pin(async move {
+                let res = f(this).await;
+                let _ = tx.send(res);
+            }),
+        );
+
+        async move {
+            let _ = mem_rx.await.map_err(|_| EthApiError::OOM)?;
+            rx.await.map_err(|_| EthApiError::InternalEthError)?
+        }
+    }
+
     /// Executes a blocking task on the tracing pool.
     ///
     /// Note: This is expected for futures that are predominantly CPU bound, as it uses `rayon`

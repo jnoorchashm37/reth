@@ -47,6 +47,9 @@ use revm_inspectors::tracing::{
 use std::sync::Arc;
 use tokio::sync::{AcquireError, OwnedSemaphorePermit};
 
+/// 2GB
+const MEMORY_LIMIT_FOR_TRACE: u64 = 1000000 * 1000 * 2;
+
 /// `debug` API implementation.
 ///
 /// This type provides the functionality for handling `debug` related requests.
@@ -97,44 +100,48 @@ where
         // replay all transactions of the block
         let this = self.clone();
         self.eth_api()
-            .spawn_with_state_at_block(block.parent_hash().into(), move |state| {
-                let mut results = Vec::with_capacity(block.body().transactions().len());
-                let mut db = CacheDB::new(StateProviderDatabase::new(state));
+            .spawn_with_state_at_block_with_memory_limit(
+                MEMORY_LIMIT_FOR_TRACE,
+                block.parent_hash().into(),
+                move |state| {
+                    let mut results = Vec::with_capacity(block.body().transactions().len());
+                    let mut db = CacheDB::new(StateProviderDatabase::new(state));
 
-                this.eth_api().apply_pre_execution_changes(&block, &mut db, &evm_env)?;
+                    this.eth_api().apply_pre_execution_changes(&block, &mut db, &evm_env)?;
 
-                let mut transactions = block.transactions_recovered().enumerate().peekable();
-                let mut inspector = None;
-                while let Some((index, tx)) = transactions.next() {
-                    let tx_hash = *tx.tx_hash();
+                    let mut transactions = block.transactions_recovered().enumerate().peekable();
+                    let mut inspector = None;
+                    while let Some((index, tx)) = transactions.next() {
+                        let tx_hash = *tx.tx_hash();
 
-                    let tx_env = this.eth_api().evm_config().tx_env(tx);
+                        let tx_env = this.eth_api().evm_config().tx_env(tx);
 
-                    let (result, state_changes) = this.trace_transaction(
-                        &opts,
-                        evm_env.clone(),
-                        tx_env,
-                        &mut db,
-                        Some(TransactionContext {
-                            block_hash: Some(block.hash()),
-                            tx_hash: Some(tx_hash),
-                            tx_index: Some(index),
-                        }),
-                        &mut inspector,
-                    )?;
+                        let (result, state_changes) = this.trace_transaction(
+                            &opts,
+                            evm_env.clone(),
+                            tx_env,
+                            &mut db,
+                            Some(TransactionContext {
+                                block_hash: Some(block.hash()),
+                                tx_hash: Some(tx_hash),
+                                tx_index: Some(index),
+                            }),
+                            &mut inspector,
+                        )?;
 
-                    inspector = inspector.map(|insp| insp.fused());
+                        inspector = inspector.map(|insp| insp.fused());
 
-                    results.push(TraceResult::Success { result, tx_hash: Some(tx_hash) });
-                    if transactions.peek().is_some() {
-                        // need to apply the state changes of this transaction before executing the
-                        // next transaction
-                        db.commit(state_changes)
+                        results.push(TraceResult::Success { result, tx_hash: Some(tx_hash) });
+                        if transactions.peek().is_some() {
+                            // need to apply the state changes of this transaction before executing
+                            // the next transaction
+                            db.commit(state_changes)
+                        }
                     }
-                }
 
-                Ok(results)
-            })
+                    Ok(results)
+                },
+            )
             .await
     }
 
@@ -227,40 +234,44 @@ where
 
         let this = self.clone();
         self.eth_api()
-            .spawn_with_state_at_block(state_at, move |state| {
-                let block_txs = block.transactions_recovered();
+            .spawn_with_state_at_block_with_memory_limit(
+                MEMORY_LIMIT_FOR_TRACE,
+                state_at,
+                move |state| {
+                    let block_txs = block.transactions_recovered();
 
-                // configure env for the target transaction
-                let tx = transaction.into_recovered();
+                    // configure env for the target transaction
+                    let tx = transaction.into_recovered();
 
-                let mut db = CacheDB::new(StateProviderDatabase::new(state));
+                    let mut db = CacheDB::new(StateProviderDatabase::new(state));
 
-                this.eth_api().apply_pre_execution_changes(&block, &mut db, &evm_env)?;
+                    this.eth_api().apply_pre_execution_changes(&block, &mut db, &evm_env)?;
 
-                // replay all transactions prior to the targeted transaction
-                let index = this.eth_api().replay_transactions_until(
-                    &mut db,
-                    evm_env.clone(),
-                    block_txs,
-                    *tx.tx_hash(),
-                )?;
+                    // replay all transactions prior to the targeted transaction
+                    let index = this.eth_api().replay_transactions_until(
+                        &mut db,
+                        evm_env.clone(),
+                        block_txs,
+                        *tx.tx_hash(),
+                    )?;
 
-                let tx_env = this.eth_api().evm_config().tx_env(&tx);
+                    let tx_env = this.eth_api().evm_config().tx_env(&tx);
 
-                this.trace_transaction(
-                    &opts,
-                    evm_env,
-                    tx_env,
-                    &mut db,
-                    Some(TransactionContext {
-                        block_hash: Some(block_hash),
-                        tx_index: Some(index),
-                        tx_hash: Some(*tx.tx_hash()),
-                    }),
-                    &mut None,
-                )
-                .map(|(trace, _)| trace)
-            })
+                    this.trace_transaction(
+                        &opts,
+                        evm_env,
+                        tx_env,
+                        &mut db,
+                        Some(TransactionContext {
+                            block_hash: Some(block_hash),
+                            tx_index: Some(index),
+                            tx_hash: Some(*tx.tx_hash()),
+                        }),
+                        &mut None,
+                    )
+                    .map(|(trace, _)| trace)
+                },
+            )
             .await
     }
 
@@ -432,24 +443,30 @@ where
 
                     let res = self
                         .eth_api()
-                        .spawn_with_call_at(call, at, overrides, move |db, evm_env, tx_env| {
-                            // wrapper is hack to get around 'higher-ranked lifetime error', see
-                            // <https://github.com/rust-lang/rust/issues/100013>
-                            let db = db.0;
+                        .spawn_with_call_at_with_memory_limit(
+                            MEMORY_LIMIT_FOR_TRACE,
+                            call,
+                            at,
+                            overrides,
+                            move |db, evm_env, tx_env| {
+                                // wrapper is hack to get around 'higher-ranked lifetime error', see
+                                // <https://github.com/rust-lang/rust/issues/100013>
+                                let db = db.0;
 
-                            let mut inspector =
-                                revm_inspectors::tracing::js::JsInspector::new(code, config)
-                                    .map_err(Eth::Error::from_eth_err)?;
-                            let res = this.eth_api().inspect(
-                                &mut *db,
-                                evm_env.clone(),
-                                tx_env.clone(),
-                                &mut inspector,
-                            )?;
-                            inspector
-                                .json_result(res, &tx_env, &evm_env.block_env, db)
-                                .map_err(Eth::Error::from_eth_err)
-                        })
+                                let mut inspector =
+                                    revm_inspectors::tracing::js::JsInspector::new(code, config)
+                                        .map_err(Eth::Error::from_eth_err)?;
+                                let res = this.eth_api().inspect(
+                                    &mut *db,
+                                    evm_env.clone(),
+                                    tx_env.clone(),
+                                    &mut inspector,
+                                )?;
+                                inspector
+                                    .json_result(res, &tx_env, &evm_env.block_env, db)
+                                    .map_err(Eth::Error::from_eth_err)
+                            },
+                        )
                         .await?;
 
                     Ok(GethTrace::JS(res))
@@ -530,72 +547,78 @@ where
         let this = self.clone();
 
         self.eth_api()
-            .spawn_with_state_at_block(at.into(), move |state| {
-                // the outer vec for the bundles
-                let mut all_bundles = Vec::with_capacity(bundles.len());
-                let mut db = CacheDB::new(StateProviderDatabase::new(state));
+            .spawn_with_state_at_block_with_memory_limit(
+                MEMORY_LIMIT_FOR_TRACE,
+                at.into(),
+                move |state| {
+                    // the outer vec for the bundles
+                    let mut all_bundles = Vec::with_capacity(bundles.len());
+                    let mut db = CacheDB::new(StateProviderDatabase::new(state));
 
-                if replay_block_txs {
-                    // only need to replay the transactions in the block if not all transactions are
-                    // to be replayed
-                    let transactions = block.transactions_recovered().take(num_txs);
+                    if replay_block_txs {
+                        // only need to replay the transactions in the block if not all transactions
+                        // are to be replayed
+                        let transactions = block.transactions_recovered().take(num_txs);
 
-                    // Execute all transactions until index
-                    for tx in transactions {
-                        let tx_env = this.eth_api().evm_config().tx_env(tx);
-                        let res = this.eth_api().transact(&mut db, evm_env.clone(), tx_env)?;
-                        db.commit(res.state);
-                    }
-                }
-
-                // Trace all bundles
-                let mut bundles = bundles.into_iter().peekable();
-                while let Some(bundle) = bundles.next() {
-                    let mut results = Vec::with_capacity(bundle.transactions.len());
-                    let Bundle { transactions, block_override } = bundle;
-
-                    let block_overrides = block_override.map(Box::new);
-                    let mut inspector = None;
-
-                    let mut transactions = transactions.into_iter().peekable();
-                    while let Some(tx) = transactions.next() {
-                        // apply state overrides only once, before the first transaction
-                        let state_overrides = state_overrides.take();
-                        let overrides = EvmOverrides::new(state_overrides, block_overrides.clone());
-
-                        let (evm_env, tx_env) = this.eth_api().prepare_call_env(
-                            evm_env.clone(),
-                            tx,
-                            &mut db,
-                            overrides,
-                        )?;
-
-                        let (trace, state) = this.trace_transaction(
-                            &tracing_options,
-                            evm_env,
-                            tx_env,
-                            &mut db,
-                            None,
-                            &mut inspector,
-                        )?;
-
-                        inspector = inspector.map(|insp| insp.fused());
-
-                        // If there is more transactions, commit the database
-                        // If there is no transactions, but more bundles, commit to the database too
-                        if transactions.peek().is_some() || bundles.peek().is_some() {
-                            db.commit(state);
+                        // Execute all transactions until index
+                        for tx in transactions {
+                            let tx_env = this.eth_api().evm_config().tx_env(tx);
+                            let res = this.eth_api().transact(&mut db, evm_env.clone(), tx_env)?;
+                            db.commit(res.state);
                         }
-                        results.push(trace);
                     }
-                    // Increment block_env number and timestamp for the next bundle
-                    evm_env.block_env.number += uint!(1_U256);
-                    evm_env.block_env.timestamp += uint!(12_U256);
 
-                    all_bundles.push(results);
-                }
-                Ok(all_bundles)
-            })
+                    // Trace all bundles
+                    let mut bundles = bundles.into_iter().peekable();
+                    while let Some(bundle) = bundles.next() {
+                        let mut results = Vec::with_capacity(bundle.transactions.len());
+                        let Bundle { transactions, block_override } = bundle;
+
+                        let block_overrides = block_override.map(Box::new);
+                        let mut inspector = None;
+
+                        let mut transactions = transactions.into_iter().peekable();
+                        while let Some(tx) = transactions.next() {
+                            // apply state overrides only once, before the first transaction
+                            let state_overrides = state_overrides.take();
+                            let overrides =
+                                EvmOverrides::new(state_overrides, block_overrides.clone());
+
+                            let (evm_env, tx_env) = this.eth_api().prepare_call_env(
+                                evm_env.clone(),
+                                tx,
+                                &mut db,
+                                overrides,
+                            )?;
+
+                            let (trace, state) = this.trace_transaction(
+                                &tracing_options,
+                                evm_env,
+                                tx_env,
+                                &mut db,
+                                None,
+                                &mut inspector,
+                            )?;
+
+                            inspector = inspector.map(|insp| insp.fused());
+
+                            // If there is more transactions, commit the database
+                            // If there is no transactions, but more bundles, commit to the database
+                            // too
+                            if transactions.peek().is_some() || bundles.peek().is_some() {
+                                db.commit(state);
+                            }
+                            results.push(trace);
+                        }
+                        // Increment block_env number and timestamp for the next bundle
+                        evm_env.block_env.number += uint!(1_U256);
+                        evm_env.block_env.timestamp += uint!(12_U256);
+
+                        all_bundles.push(results);
+                    }
+                    Ok(all_bundles)
+                },
+            )
             .await
     }
 

@@ -186,6 +186,9 @@ pub enum EthApiError {
     /// Error thrown when batch tx send channel fails
     #[error("Batch transaction sender channel closed")]
     BatchTxSendError,
+    /// OOM triggered error
+    #[error("Request ran out of memory")]
+    OOM,
     /// Any other error
     #[error("{0}")]
     Other(Box<dyn ToRpcError>),
@@ -264,6 +267,7 @@ impl From<EthApiError> for jsonrpsee_types::error::ErrorObject<'static> {
             EthApiError::ExcessBlobGasNotSet |
             EthApiError::InvalidBlockData(_) |
             EthApiError::Internal(_) |
+            EthApiError::OOM |
             EthApiError::EvmCustom(_) => internal_rpc_err(error.to_string()),
             EthApiError::UnknownBlockOrTxIndex | EthApiError::TransactionNotFound => {
                 rpc_error_with_code(EthRpcErrorCode::ResourceNotFound.code(), error.to_string())

@@ -26,13 +26,21 @@ auto_impl.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 dyn-clone.workspace = true
+libc = "0.2"
 
 # feature `rayon`
 rayon = { workspace = true, optional = true }
 pin-project = { workspace = true, optional = true }
 
+
 [dev-dependencies]
-tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }
+tokio = { workspace = true, features = [
+    "sync",
+    "rt",
+    "rt-multi-thread",
+    "time",
+    "macros",
+] }
 
 [features]
 rayon = ["dep:rayon", "pin-project"]

@@ -10528,6 +10528,7 @@ dependencies = [
  "auto_impl",
  "dyn-clone",
  "futures-util",
+ "libc",
  "metrics",
  "pin-project",
  "rayon",

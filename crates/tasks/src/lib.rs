@@ -13,6 +13,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 use crate::{
+    memory_limit::spawn_with_memory_limit_blocking,
     metrics::{IncCounterOnDrop, TaskExecutorMetrics},
     shutdown::{signal, GracefulShutdown, GracefulShutdownGuard, Shutdown, Signal},
 };
@@ -33,12 +34,16 @@ use std::{
 };
 use tokio::{
     runtime::Handle,
-    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    sync::{
+        mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+        oneshot,
+    },
     task::JoinHandle,
 };
 use tracing::{debug, error};
 use tracing_futures::Instrument;
 
+pub mod memory_limit;
 pub mod metrics;
 pub mod shutdown;
 
@@ -99,6 +104,14 @@ pub trait TaskSpawner: Send + Sync + Unpin + std::fmt::Debug + DynClone {
     /// Spawns a blocking task onto the runtime.
     fn spawn_blocking(&self, fut: BoxFuture<'static, ()>) -> JoinHandle<()>;
 
+    /// Spawns a blocking task onto the runtime with a specified memory limit (in Bytes)
+    fn spawn_blocking_with_memory_limit(
+        &self,
+        memory_limit_bytes: u64,
+        memory_failure_tx: oneshot::Sender<Result<(), std::io::Error>>,
+        fut: BoxFuture<'static, ()>,
+    ) -> JoinHandle<()>;
+
     /// This spawns a critical blocking task onto the runtime.
     fn spawn_critical_blocking(
         &self,
@@ -132,6 +145,19 @@ impl TaskSpawner for TokioTaskExecutor {
 
     fn spawn_blocking(&self, fut: BoxFuture<'static, ()>) -> JoinHandle<()> {
         tokio::task::spawn_blocking(move || tokio::runtime::Handle::current().block_on(fut))
+    }
+
+    fn spawn_blocking_with_memory_limit(
+        &self,
+        memory_limit_bytes: u64,
+        memory_failure_tx: oneshot::Sender<Result<(), std::io::Error>>,
+        fut: BoxFuture<'static, ()>,
+    ) -> JoinHandle<()> {
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async move {
+                spawn_with_memory_limit_blocking(memory_limit_bytes, memory_failure_tx, fut)
+            })
+        })
     }
 
     fn spawn_critical_blocking(
@@ -245,7 +271,7 @@ impl TaskManager {
         while self.graceful_tasks.load(Ordering::Relaxed) > 0 {
             if when.map(|when| std::time::Instant::now() > when).unwrap_or(false) {
                 debug!("graceful shutdown timed out");
-                return false
+                return false;
             }
             std::hint::spin_loop();
         }
@@ -643,6 +669,19 @@ impl TaskSpawner for TaskExecutor {
 
     fn spawn_blocking(&self, fut: BoxFuture<'static, ()>) -> JoinHandle<()> {
         self.metrics.inc_regular_tasks();
+        self.spawn_blocking(fut)
+    }
+
+    fn spawn_blocking_with_memory_limit(
+        &self,
+        memory_limit_bytes: u64,
+        memory_failure_tx: oneshot::Sender<Result<(), std::io::Error>>,
+        fut: BoxFuture<'static, ()>,
+    ) -> JoinHandle<()> {
+        self.metrics.inc_regular_tasks();
+        let fut = async move {
+            spawn_with_memory_limit_blocking(memory_limit_bytes, memory_failure_tx, fut)
+        };
         self.spawn_blocking(fut)
     }
 
