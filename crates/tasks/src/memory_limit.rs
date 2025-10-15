@@ -45,31 +45,35 @@ pub fn spawn_blocking_with_memory_limit<F: Future<Output = ()> + Send + 'static>
 #[allow(unreachable_code)]
 fn run_with_memory_limit<F>(memory_limit_bytes: u64, f: F) -> io::Result<i32>
 where
-    F: FnOnce(),
+    F: FnOnce() + Send + 'static,
 {
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if pid == 0 {
-        let lim = libc::rlimit { rlim_cur: memory_limit_bytes, rlim_max: memory_limit_bytes };
-        if unsafe { libc::setrlimit(RLIMIT_AS, &lim) } != 0 {
-            unsafe { libc::_exit(251) };
+    std::thread::spawn(move || {
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            return Err(io::Error::last_os_error());
         }
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f()))
-            .map(|_| {
-                // success path
-                unsafe { libc::_exit(0) };
-            })
-            .map_err(|_| {
-                unsafe { libc::_exit(101) };
-            });
-    }
-    let mut status = 0;
-    if unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(status)
+        if pid == 0 {
+            let lim = libc::rlimit { rlim_cur: memory_limit_bytes, rlim_max: memory_limit_bytes };
+            if unsafe { libc::setrlimit(RLIMIT_AS, &lim) } != 0 {
+                unsafe { libc::_exit(251) };
+            }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f()))
+                .map(|_| {
+                    // success path
+                    unsafe { libc::_exit(0) };
+                })
+                .map_err(|_| {
+                    unsafe { libc::_exit(101) };
+                });
+        }
+        let mut status = 0;
+        if unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(status)
+    })
+    .join()
+    .unwrap()
 }
 
 // #[cfg(all(test, target_os = "linux"))]
