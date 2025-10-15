@@ -4,16 +4,16 @@ use libc::RLIMIT_AS;
 use std::{future::Future, io};
 use tokio::sync::oneshot;
 
-/// Run `fut` in a forked child with a memory limit, report the result via `memory_failure_tx`.
-/// Must be called from a blocking context (e.g. `tokio::task::spawn_blocking`).
-pub fn spawn_with_memory_limit<F: Future<Output = ()> + Send + 'static>(
+/// Run future in a forked child with a memory limit, report the result via `memory_failure_tx`.
+/// Must be called from a blocking context (`tokio::task::spawn_blocking`).
+pub fn spawn_blocking_with_memory_limit<F: Future<Output = ()> + Send + 'static>(
     memory_limit_bytes: u64,
     memory_failure_tx: oneshot::Sender<Result<(), std::io::Error>>,
     fut: F,
 ) {
     // Do NOT enter a Tokio runtime here. We are on a blocking thread
     let status = run_with_memory_limit(memory_limit_bytes, || {
-        // this is run in the child - build a fresh single-thread runtime and drive the future
+        // this is run in the child - build a new single-thread runtime and drive the future
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(fut);
     });
@@ -56,18 +56,14 @@ where
         if unsafe { libc::setrlimit(RLIMIT_AS, &lim) } != 0 {
             unsafe { libc::_exit(251) };
         }
-        // f(); // do the actual work
-        // unsafe { libc::_exit(0) };
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f()))
             .map(|_| {
                 // success path
                 unsafe { libc::_exit(0) };
             })
             .map_err(|_| {
-                // panic path — pick a conventional non-zero code (101 = rustc's panic code)
                 unsafe { libc::_exit(101) };
             });
-        // unreachable!();
     }
     let mut status = 0;
     if unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
@@ -75,8 +71,6 @@ where
     }
     Ok(status)
 }
-
-// Put this in the same module as `spawn_with_memory_limit`.
 
 // #[cfg(all(test, target_os = "linux"))]
 #[cfg(test)]
@@ -99,7 +93,7 @@ mod tests {
     {
         let (tx, rx) = oneshot::channel();
         tokio::task::spawn_blocking(move || {
-            spawn_with_memory_limit(limit, tx, fut);
+            spawn_blocking_with_memory_limit(limit, tx, fut);
         });
 
         // Give the child up to 15s to finish (slow CI boxes, debug mode).
@@ -189,10 +183,10 @@ mod tests {
 
         // Kick off both in parallel on blocking threads.
         let h1 = tokio::task::spawn_blocking(move || {
-            spawn_with_memory_limit(limit, tx1, fut_ok);
+            spawn_blocking_with_memory_limit(limit, tx1, fut_ok);
         });
         let h2 = tokio::task::spawn_blocking(move || {
-            spawn_with_memory_limit(limit, tx2, fut_oom);
+            spawn_blocking_with_memory_limit(limit, tx2, fut_oom);
         });
 
         let r1 = timeout(Duration::from_secs(15), rx1)
