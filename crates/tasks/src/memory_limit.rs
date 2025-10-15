@@ -4,49 +4,43 @@ use libc::RLIMIT_AS;
 use std::{future::Future, io};
 use tokio::sync::oneshot;
 
-/// spawns block memory limit
+/// Run `fut` in a forked child with a memory limit, report the result via `memory_failure_tx`.
+/// Must be called from a blocking context (e.g. `tokio::task::spawn_blocking`).
 pub fn spawn_with_memory_limit_blocking<F: Future<Output = ()> + Send + 'static>(
     memory_limit_bytes: u64,
     memory_failure_tx: oneshot::Sender<Result<(), std::io::Error>>,
     fut: F,
 ) {
-    let _ = std::thread::spawn(move || {
-        // Wrap the Future in a blocking closure that *doesn't* touch Tokio inside the child.
-        let status = run_with_memory_limit_blocking(memory_limit_bytes, || {
-            // Do plain, blocking work here. If you must drive `fut`, do it with a
-            // minimal, non-Tokio executor or make the work blocking.
-            // Best: refactor so the heavy work is a blocking FnOnce().
-            // As a last resort (with caveats), build a fresh runtime here (Option B).
-            // Example (unsafe-ish):
+    // Do NOT enter a Tokio runtime here. We are on a blocking thread; forking from
+    // here is safe as long as we don't call Handle::current().block_on(..) first.
+    let status = run_with_memory_limit_blocking(memory_limit_bytes, || {
+        // In the child, build a fresh single-thread runtime and drive the future.
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(fut);
+    });
 
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-            rt.block_on(fut);
-        });
-
-        let res = status.and_then(|st| {
-            if libc::WIFEXITED(st) {
-                let code = { libc::WEXITSTATUS(st) };
-                if code == 0 {
-                    Ok(())
-                } else {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("child exited with code {code}"),
-                    ))
-                }
-            } else if libc::WIFSIGNALED(st) {
+    let res = status.and_then(|st| {
+        if libc::WIFEXITED(st) {
+            let code = libc::WEXITSTATUS(st);
+            if code == 0 {
+                Ok(())
+            } else {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::Other,
-                    format!("child signaled: {}", libc::WTERMSIG(st)),
+                    format!("child exited with code {code}"),
                 ))
-            } else {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, format!("bad exit: {st}")))
             }
-        });
+        } else if libc::WIFSIGNALED(st) {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("child signaled: {}", libc::WTERMSIG(st)),
+            ))
+        } else {
+            Err(std::io::Error::new(std::io::ErrorKind::Other, format!("bad exit: {st}")))
+        }
+    });
 
-        let _ = memory_failure_tx.send(res);
-    })
-    .join();
+    let _ = memory_failure_tx.send(res);
 }
 
 /// Public API unchanged: returns Err(...) if the memory-limited child didn’t finish cleanly.
@@ -119,8 +113,9 @@ mod tests {
     /// A future that tries to allocate 1 GiB. With a 256 MiB cap this should fail.
     fn huge_alloc_future() -> impl Future<Output = ()> + Send + 'static {
         async move {
-            let size = 1024usize * 1024 * 1024; // 1 GiB
-                                                // This should fail at allocation time under RLIMIT_AS.
+            // This should fail at allocation time under RLIMIT_AS.
+            // 1 GiB
+            let size = 1024usize * 1024 * 1024;
             let mut v = Vec::<u8>::with_capacity(size);
             // If it somehow succeeded, set_len would make it "logically" that big.
             unsafe { v.set_len(size) };

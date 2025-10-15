@@ -154,9 +154,7 @@ impl TaskSpawner for TokioTaskExecutor {
         fut: BoxFuture<'static, ()>,
     ) -> JoinHandle<()> {
         tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(async move {
-                spawn_with_memory_limit_blocking(memory_limit_bytes, memory_failure_tx, fut)
-            })
+            spawn_with_memory_limit_blocking(memory_limit_bytes, memory_failure_tx, fut)
         })
     }
 
@@ -679,10 +677,9 @@ impl TaskSpawner for TaskExecutor {
         fut: BoxFuture<'static, ()>,
     ) -> JoinHandle<()> {
         self.metrics.inc_regular_tasks();
-        let fut = async move {
+        tokio::task::spawn_blocking(move || {
             spawn_with_memory_limit_blocking(memory_limit_bytes, memory_failure_tx, fut)
-        };
-        self.spawn_blocking(fut)
+        })
     }
 
     fn spawn_critical_blocking(
